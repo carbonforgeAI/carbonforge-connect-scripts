@@ -267,8 +267,7 @@ locals {
     {
       Effect = "Allow"
       Action = [
-        "logs:FilterLogEvents", "logs:GetLogEvents", "logs:DescribeLogStreams",
-        "logs:StartQuery", "logs:GetQueryResults", "logs:StopQuery", "logs:GetDataProtectionPolicy",
+        "logs:FilterLogEvents", "logs:GetLogEvents", "logs:DescribeLogStreams", "logs:GetDataProtectionPolicy",
       ]
       Resource = [
         "arn:aws:logs:${local.region}:${local.account_id}:log-group:${local.log_group_name}",
@@ -301,8 +300,7 @@ locals {
     {
       Effect = "Allow"
       Action = [
-        "logs:FilterLogEvents", "logs:GetLogEvents", "logs:DescribeLogStreams",
-        "logs:StartQuery", "logs:GetQueryResults", "logs:StopQuery", "logs:GetDataProtectionPolicy",
+        "logs:FilterLogEvents", "logs:GetLogEvents", "logs:DescribeLogStreams", "logs:GetDataProtectionPolicy",
       ]
       Resource = [local.their_log_group, "${local.their_log_group}:*"]
     },

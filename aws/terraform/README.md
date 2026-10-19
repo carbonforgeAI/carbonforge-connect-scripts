@@ -27,7 +27,7 @@ output "reader_role_arn" {
 Run `terraform init && terraform apply`, paste `reader_role_arn` into CarbonForge Connect, then click **Test connection**.
 
 **Requirements:**
-- Terraform 1.5 or later.
+- Terraform 1.5 or later, with the AWS provider 6.x (the module declares `>= 6.0.0, < 7.0.0`).
 - The **AWS CLI**, signed in with the **same credentials** as the Terraform AWS provider (for example the same `AWS_PROFILE`). The module uses it once per plan to read Bedrock's current logging setting and, when logging is already on, its log group's masking policy and its bucket's encryption key (all read-only), because Terraform has no data source for these. If the CLI and the provider point at different accounts, the plan stops and says so.
 
 ## What it creates
