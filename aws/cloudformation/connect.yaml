@@ -1,0 +1,37 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: CarbonForge Connect for AWS (not yet implemented)
+
+Parameters:
+  ReadingLevel:
+    Type: String
+    AllowedValues: [masked, full]
+  ConnectorRole:
+    Type: String
+  ExternalId:
+    Type: String
+  BilledSpend:
+    Type: String
+    Default: "false"
+  ExistingLogging:
+    Type: String
+    Default: none
+  ExistingLogGroup:
+    Type: String
+    Default: ""
+  ExistingBucket:
+    Type: String
+    Default: ""
+  ExistingKeyPrefix:
+    Type: String
+    Default: ""
+  ExistingKmsKeyArn:
+    Type: String
+    Default: ""
+
+Conditions: {}
+
+Resources:
+  ReaderRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: CarbonForgeReader
