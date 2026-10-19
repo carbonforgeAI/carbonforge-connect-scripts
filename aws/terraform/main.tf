@@ -23,6 +23,8 @@ locals {
 # this module's own, the module ADOPTS it: it changes nothing in it and only
 # gives the reader role read access to its destination. When there is none, or
 # it is this module's own (re-apply, level switch), the module manages it.
+# It is our own only if every destination is: a CloudWatch destination needs
+# both our log group and our writer role, an S3 one our bucket.
 # ---------------------------------------------------------------------------
 
 data "external" "existing_logging" {
@@ -33,7 +35,7 @@ locals {
   existing      = data.external.existing_logging.result
   existing_cw   = local.existing.log_group != "None"
   existing_s3   = local.existing.bucket != "None"
-  existing_ours = (!local.existing_cw || endswith(local.existing.role_arn, local.writer_role_suffix)) && (!local.existing_s3 || local.existing.bucket == local.bucket_name)
+  existing_ours = (!local.existing_cw || (local.existing.log_group == local.log_group_name && endswith(local.existing.role_arn, local.writer_role_suffix))) && (!local.existing_s3 || local.existing.bucket == local.bucket_name)
 
   adopt  = (local.existing_cw || local.existing_s3) && !local.existing_ours
   create = !local.adopt
