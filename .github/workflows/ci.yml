@@ -30,6 +30,39 @@ jobs:
       - name: Test
         run: terraform test
 
+  # The same checks against the lowest provider versions versions.tf allows, so a constraint
+  # floor that the module does not actually work with fails here instead of for a customer.
+  terraform-provider-floor:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: aws/terraform
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.15.8
+      - name: Pin every provider to its floor
+        run: |
+          {
+            echo 'terraform {'
+            echo '  required_providers {'
+            terraform providers -no-color \
+              | sed -n 's|.*provider\[registry.terraform.io/hashicorp/\([a-z]*\)\] >= \([0-9.]*\),.*|    \1 = { source = "hashicorp/\1", version = "\2" }|p'
+            echo '  }'
+            echo '}'
+          } > floor.tmp
+          # Written aside first: terraform providers would also read a half-written override file.
+          mv floor.tmp floor_override.tf
+          cat floor_override.tf
+          test "$(grep -c 'version = ' floor_override.tf)" -eq 3
+      - name: Init
+        run: terraform init -backend=false -input=false
+      - name: Validate
+        run: terraform validate
+      - name: Test
+        run: terraform test
+
   python:
     runs-on: ubuntu-latest
     steps:

@@ -147,6 +147,16 @@ run "masked_reader_reads_our_two_groups_and_is_denied_unmask" {
     error_message = "The masked reader must read our two log groups only."
   }
   assert {
+    condition = toset(jsondecode(aws_iam_role_policy.reader.policy).Statement[0].Action) == toset([
+      "logs:FilterLogEvents", "logs:GetLogEvents", "logs:DescribeLogStreams", "logs:GetDataProtectionPolicy",
+    ])
+    error_message = "The masked reader must get exactly the log read actions CarbonForge uses."
+  }
+  assert {
+    condition     = length([for s in jsondecode(aws_iam_role_policy.reader.policy).Statement : s if anytrue([for a in flatten([s.Action]) : contains(["logs:StartQuery", "logs:GetQueryResults", "logs:StopQuery"], a)])]) == 0
+    error_message = "The masked reader must not run Logs Insights queries (GetQueryResults and StopQuery cannot be scoped to a log group)."
+  }
+  assert {
     condition     = length([for s in jsondecode(aws_iam_role_policy.reader.policy).Statement : s if s.Effect == "Deny" && s.Action == "logs:Unmask" && s.Resource == "*"]) == 1
     error_message = "The masked reader must be denied logs:Unmask."
   }

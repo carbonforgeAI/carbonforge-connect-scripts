@@ -161,6 +161,16 @@ run "adopt_their_group_with_masking_at_masked_reads_their_group_and_never_s3" {
     error_message = "The reader must read their log group."
   }
   assert {
+    condition = toset(jsondecode(aws_iam_role_policy.reader.policy).Statement[0].Action) == toset([
+      "logs:FilterLogEvents", "logs:GetLogEvents", "logs:DescribeLogStreams", "logs:GetDataProtectionPolicy",
+    ])
+    error_message = "The reader must get exactly the log read actions CarbonForge uses on their group."
+  }
+  assert {
+    condition     = length([for s in jsondecode(aws_iam_role_policy.reader.policy).Statement : s if anytrue([for a in flatten([s.Action]) : contains(["logs:StartQuery", "logs:GetQueryResults", "logs:StopQuery"], a)])]) == 0
+    error_message = "The reader must not run Logs Insights queries (GetQueryResults and StopQuery cannot be scoped to a log group)."
+  }
+  assert {
     condition     = length([for s in jsondecode(aws_iam_role_policy.reader.policy).Statement : s if s.Effect == "Deny" && s.Action == "logs:Unmask" && s.Resource == "*"]) == 1
     error_message = "The reader must be denied logs:Unmask on their group."
   }
