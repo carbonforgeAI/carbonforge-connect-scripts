@@ -71,14 +71,16 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install tools
-        run: pip install pytest==9.0.3 ruff==0.13.0 mypy==1.18.2
-      - name: identifiers.tf is in sync with aws/identifiers.json
+        run: pip install pytest==9.0.3 ruff==0.13.0 mypy==1.18.2 pyyaml==6.0.2 types-PyYAML==6.0.12.20260906 cfn-lint==1.38.0
+      - name: identifiers.tf and connect.yaml are in sync with aws/identifiers.json
         run: python scripts/gen_identifiers.py --check
+      - name: CloudFormation lint
+        run: cfn-lint aws/cloudformation/connect.yaml
       - name: Lint
         run: |
-          ruff check --line-length 100 scripts
-          ruff format --line-length 100 --check scripts
+          ruff check --line-length 100 scripts aws/cloudformation
+          ruff format --line-length 100 --check scripts aws/cloudformation
       - name: Types
-        run: mypy --strict scripts
+        run: mypy --strict scripts aws/cloudformation/tests
       - name: Test
-        run: pytest scripts/tests
+        run: pytest scripts/tests aws/cloudformation/tests
