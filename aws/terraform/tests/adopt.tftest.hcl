@@ -231,3 +231,62 @@ run "our_writer_role_with_another_bucket_is_adopted_not_replaced" {
     error_message = "A configuration that writes to a bucket other than ours must be adopted."
   }
 }
+
+run "our_writer_role_name_with_another_log_group_is_adopted_not_replaced" {
+  command = plan
+
+  # Our role name, but a log group that is not ours: the configuration is not ours.
+  override_data {
+    target = data.external.existing_logging
+    values = {
+      result = {
+        account     = "111111111111"
+        log_group   = "/acme/bedrock-invocations"
+        role_arn    = "arn:aws:iam::111111111111:role/CarbonForgeBedrockLogWriter"
+        bucket      = "None"
+        prefix      = "None"
+        text        = "True"
+        masking     = "False"
+        kms_key_arn = "None"
+      }
+    }
+  }
+
+  assert {
+    condition     = output.adopted_existing_logging == true && length(aws_bedrock_model_invocation_logging_configuration.this) == 0
+    error_message = "A configuration that writes to a log group other than ours must be adopted, never replaced."
+  }
+  assert {
+    condition = try(toset(jsondecode(aws_iam_role_policy.reader.policy).Statement[0].Resource), null) == toset([
+      "arn:aws:logs:us-east-1:111111111111:log-group:/acme/bedrock-invocations",
+      "arn:aws:logs:us-east-1:111111111111:log-group:/acme/bedrock-invocations:*",
+    ])
+    error_message = "The reader must read their log group."
+  }
+}
+
+run "our_log_group_name_with_another_role_is_adopted_not_replaced" {
+  command = plan
+
+  # Our log group name, but written by a role that is not ours: the configuration is not ours.
+  override_data {
+    target = data.external.existing_logging
+    values = {
+      result = {
+        account     = "111111111111"
+        log_group   = "/aws/bedrock/modelinvocations"
+        role_arn    = "arn:aws:iam::111111111111:role/AcmeBedrockWriter"
+        bucket      = "None"
+        prefix      = "None"
+        text        = "True"
+        masking     = "False"
+        kms_key_arn = "None"
+      }
+    }
+  }
+
+  assert {
+    condition     = output.adopted_existing_logging == true && length(aws_bedrock_model_invocation_logging_configuration.this) == 0
+    error_message = "A configuration written by a role other than ours must be adopted, never replaced."
+  }
+}
