@@ -1,0 +1,97 @@
+"""Generate aws/terraform/identifiers.tf from aws/identifiers.json.
+
+aws/identifiers.json is the single source of the CloudWatch masking identifiers. The Terraform
+module reads them from identifiers.tf, which this script writes; CI runs it with --check so the
+two cannot drift apart.
+"""
+
+import argparse
+import json
+import re
+import sys
+from pathlib import Path
+
+REPO = Path(__file__).resolve().parents[1]
+SOURCE = REPO / "aws" / "identifiers.json"
+TARGET = REPO / "aws" / "terraform" / "identifiers.tf"
+
+# AWS rejects a data protection policy with more custom identifiers than this.
+MAX_CUSTOM = 10
+CUSTOM_NAME = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*$")
+
+HEADER = """\
+# Generated from aws/identifiers.json by scripts/gen_identifiers.py. Do not edit by hand:
+# change the JSON and run the script. The list must stay identical to AWS step 2 of the setup
+# runbook (cloud_setup.md), so the manual steps and this module mask the same way.
+"""
+
+
+def hcl_string(value: str) -> str:
+    """Quote a string for HCL so Terraform reads back exactly the same characters."""
+    # JSON escaping matches HCL's for quotes, backslashes and control characters; HCL also
+    # treats ${ and %{ as templates, which doubling the first character turns into literals.
+    return json.dumps(value).replace("${", "$${").replace("%{", "%%{")
+
+
+def render(identifiers: dict[str, object]) -> str:
+    """Return the content of identifiers.tf for the given identifiers, in source order.
+
+    Raises ValueError if the input is not a list of managed names and a name-to-regex object,
+    if there are more custom identifiers than AWS allows, or if a custom name cannot be an
+    unquoted HCL key.
+    """
+    managed = identifiers.get("managed")
+    custom = identifiers.get("custom")
+    if not (
+        isinstance(managed, list)
+        and all(isinstance(name, str) for name in managed)
+        and isinstance(custom, dict)
+        and all(isinstance(regex, str) for regex in custom.values())
+    ):
+        raise ValueError('identifiers must be {"managed": [names], "custom": {name: regex}}')
+    if len(custom) > MAX_CUSTOM:
+        raise ValueError(
+            f"AWS allows at most {MAX_CUSTOM} custom data identifiers, got {len(custom)}"
+        )
+    for name in custom:
+        if not CUSTOM_NAME.match(name):
+            raise ValueError(f"custom identifier name {name!r} must match {CUSTOM_NAME.pattern}")
+
+    width = max((len(name) for name in custom), default=0)
+    lines = ["locals {", "  managed_data_identifiers = ["]
+    lines += [f"    {hcl_string(name)}," for name in managed]
+    lines += [
+        "  ]",
+        "",
+        f"  # AWS allows at most {MAX_CUSTOM} custom data identifiers per policy.",
+        "  custom_data_identifiers = {",
+    ]
+    lines += [f"    {name.ljust(width)} = {hcl_string(regex)}" for name, regex in custom.items()]
+    lines += ["  }", "}"]
+    return HEADER + "\n" + "\n".join(lines) + "\n"
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Write identifiers.tf, or with --check report whether it is up to date (exit 1 if not)."""
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("--check", action="store_true", help="fail if the file is out of date")
+    parser.add_argument("--source", type=Path, default=SOURCE, help="identifiers JSON")
+    parser.add_argument("--target", type=Path, default=TARGET, help="generated Terraform file")
+    args = parser.parse_args(argv)
+
+    wanted = render(json.loads(args.source.read_text(encoding="utf-8")))
+    if not args.check:
+        args.target.write_text(wanted, encoding="utf-8")
+        return 0
+    current = args.target.read_text(encoding="utf-8") if args.target.exists() else None
+    if current != wanted:
+        print(
+            f"{args.target} is out of date with {args.source}: run scripts/gen_identifiers.py",
+            file=sys.stderr,
+        )
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
