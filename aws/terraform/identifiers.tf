@@ -1,5 +1,6 @@
-# Generated from connectors/cloud_setup.md (AWS step 2). Keep identical: the page and this module
-# must mask the same way. Regenerate rather than edit by hand.
+# Generated from aws/identifiers.json by scripts/gen_identifiers.py. Do not edit by hand:
+# change the JSON and run the script. The list must stay identical to AWS step 2 of the setup
+# runbook (cloud_setup.md), so the manual steps and this module mask the same way.
 
 locals {
   managed_data_identifiers = [

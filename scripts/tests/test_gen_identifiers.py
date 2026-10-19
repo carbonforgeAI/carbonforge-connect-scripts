@@ -23,7 +23,7 @@ def load_generator() -> ModuleType:
 
 gen = load_generator()
 
-SMALL = {
+SMALL: dict[str, object] = {
     "managed": ["Name", "EmailAddress"],
     "custom": {"CarbonForgeShort": r"\d{3}", "CarbonForgeLongerName": r"\b[A-Z]+\b"},
 }
@@ -60,7 +60,9 @@ def write_source(directory: Path, identifiers: dict[str, object]) -> Path:
 def test_render_writes_header_managed_list_and_aligned_custom_map() -> None:
     """The output is the generated-file header, then the locals block terraform fmt keeps as is."""
     rendered = gen.render(SMALL)
-    assert rendered.startswith("# Generated from aws/identifiers.json by scripts/gen_identifiers.py.")
+    assert rendered.startswith(
+        "# Generated from aws/identifiers.json by scripts/gen_identifiers.py."
+    )
     assert rendered.endswith("\n\n" + SMALL_BODY)
 
 

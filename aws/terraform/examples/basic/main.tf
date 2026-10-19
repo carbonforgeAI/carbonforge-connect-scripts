@@ -1,6 +1,6 @@
 # Connect an AWS account to CarbonForge.
 # Replace <AWS_REGION>, <AWS_ACCOUNT_ID> and <EXTERNAL_ID> with the values shown in CarbonForge Connect.
-# Once published, use: source = "github.com/<CARBONFORGE_GITHUB_ORG>/terraform-aws-carbonforge-connect?ref=<version>"
+# Outside this repository, use: source = "github.com/carbonforgeAI/carbonforge-connect-scripts//aws/terraform?ref=<version>"
 
 provider "aws" {
   region              = "<AWS_REGION>"

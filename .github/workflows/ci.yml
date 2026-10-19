@@ -1,0 +1,51 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  terraform:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: aws/terraform
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.15.8
+      - name: Format
+        run: terraform fmt -check -recursive
+        working-directory: .
+      - name: Init
+        run: terraform init -backend=false -input=false
+      - name: Validate
+        run: terraform validate
+      # Mocked providers and an overridden existing-logging check: no AWS credentials, no AWS CLI.
+      - name: Test
+        run: terraform test
+
+  python:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install tools
+        run: pip install pytest==9.0.3 ruff==0.13.0 mypy==1.18.2
+      - name: identifiers.tf is in sync with aws/identifiers.json
+        run: python scripts/gen_identifiers.py --check
+      - name: Lint
+        run: |
+          ruff check --line-length 100 scripts
+          ruff format --line-length 100 --check scripts
+      - name: Types
+        run: mypy --strict scripts
+      - name: Test
+        run: pytest scripts/tests

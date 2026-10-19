@@ -11,7 +11,7 @@ provider "aws" {
 }
 
 module "carbonforge_connect" {
-  source = "github.com/<CARBONFORGE_GITHUB_ORG>/terraform-aws-carbonforge-connect?ref=<version>"
+  source = "github.com/carbonforgeAI/carbonforge-connect-scripts//aws/terraform?ref=<version>"
 
   reading_level  = "masked"   # or "full"
   connector_role = "arn:aws:iam::379604374207:role/CarbonForgeConnectorProd"
@@ -77,4 +77,6 @@ Run `terraform init && terraform apply`, paste `reader_role_arn` into CarbonForg
 
 ## Maintainers
 
-`identifiers.tf` is generated from `connectors/cloud_setup.md` (AWS step 2), so the module and the manual steps mask the same way. Regenerate it rather than editing it by hand.
+`identifiers.tf` is generated from [`aws/identifiers.json`](../identifiers.json) by [`scripts/gen_identifiers.py`](../../scripts/gen_identifiers.py); never edit it by hand. To change what is masked, edit the JSON, run `python3 scripts/gen_identifiers.py` from the repository root, and commit both files. CI runs the script with `--check` and fails if they differ. The list must stay identical to AWS step 2 of the setup runbook (`cloud_setup.md`), so the module and the manual steps mask the same way.
+
+Tests: `terraform test` in this directory runs the cases in [`tests/`](tests/) against mocked providers, with the existing-logging check overridden, so it needs no AWS credentials and no AWS CLI.
