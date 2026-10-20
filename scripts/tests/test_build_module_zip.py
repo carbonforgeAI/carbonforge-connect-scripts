@@ -4,30 +4,57 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
 import subprocess
 import zipfile
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts" / "build_module_zip.sh"
 ENTRIES = {
-    "README.md", "identifiers.tf", "main.tf", "outputs.tf", "scripts/",
-    "scripts/existing_logging.sh", "variables.tf", "versions.tf",
+    "README.md",
+    "identifiers.tf",
+    "main.tf",
+    "outputs.tf",
+    "scripts/",
+    "scripts/existing_logging.sh",
+    "variables.tf",
+    "versions.tf",
 }
 
 
 def build(out: Path, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
     """Run the build script on HEAD into ``out``."""
-    return subprocess.run(["sh", str(SCRIPT), "HEAD", str(out)], cwd=ROOT, env=env,
-                          capture_output=True, text=True)
+    return subprocess.run(
+        ["sh", str(SCRIPT), "HEAD", str(out)],
+        cwd=ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
 
 
-def test_two_builds_of_one_commit_are_identical_and_hold_the_module_at_the_root(tmp_path: Path) -> None:
+def git_has_archive_mtime() -> bool:
+    """Whether this git's ``git archive`` has ``--mtime`` (2.40 or later)."""
+    found = re.search(
+        r"(\d+)\.(\d+)",
+        subprocess.run(["git", "--version"], capture_output=True, text=True, check=True).stdout,
+    )
+    return found is not None and (int(found[1]), int(found[2])) >= (2, 40)
+
+
+@pytest.mark.skipif(not git_has_archive_mtime(), reason="needs git 2.40+ (git archive --mtime)")
+def test_two_builds_are_identical_with_the_module_at_the_root(tmp_path: Path) -> None:
     first, second = tmp_path / "a.zip", tmp_path / "b.zip"
     for out in (first, second):
         run = build(out)
         assert run.returncode == 0, run.stderr
-    assert hashlib.sha256(first.read_bytes()).digest() == hashlib.sha256(second.read_bytes()).digest()
+    assert (
+        hashlib.sha256(first.read_bytes()).digest() == hashlib.sha256(second.read_bytes()).digest()
+    )
     assert set(zipfile.ZipFile(first).namelist()) == ENTRIES
 
 
