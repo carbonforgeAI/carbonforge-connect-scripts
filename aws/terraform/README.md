@@ -11,7 +11,7 @@ provider "aws" {
 }
 
 module "carbonforge_connect" {
-  source = "github.com/carbonforgeAI/carbonforge-connect-scripts//aws/terraform?ref=<version>"
+  source = "https://carbonforge-connect-templates.s3.amazonaws.com/terraform-aws-connect-v1.zip"
 
   reading_level  = "masked"   # or "full"
   connector_role = "arn:aws:iam::379604374207:role/CarbonForgeConnectorProd"
