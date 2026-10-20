@@ -1,0 +1,450 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  CarbonForge Connect for AWS. Creates the Amazon Bedrock log destination (or, if your logging
+  is already on, reads yours as it is) and the read-only CarbonForgeReader role that only the
+  CarbonForge connector role can assume, with your external ID. CloudFormation cannot turn
+  Bedrock invocation logging on: do it once afterwards with the stack outputs. No CarbonForge
+  code runs in your account.
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label: { default: From CarbonForge Connect }
+        Parameters: [ReadingLevel, ConnectorRole, ExternalId, BilledSpend]
+      - Label: { default: Only if Bedrock invocation logging is already on in this region }
+        Parameters: [ExistingLogging, ExistingLogGroup, ExistingBucket, ExistingKeyPrefix, ExistingKmsKeyArn]
+    ParameterLabels:
+      ReadingLevel: { default: Reading level }
+      ConnectorRole: { default: CarbonForge connector role }
+      ExternalId: { default: External ID }
+      BilledSpend: { default: Let CarbonForge read your billed Bedrock spend }
+      ExistingLogging: { default: Existing Bedrock logging }
+      ExistingLogGroup: { default: Your log group }
+      ExistingBucket: { default: Your bucket }
+      ExistingKeyPrefix: { default: Your bucket key prefix }
+      ExistingKmsKeyArn: { default: Your bucket's KMS key ARN }
+
+Parameters:
+  ReadingLevel:
+    Type: String
+    AllowedValues: [masked, full]
+    Description: >-
+      masked: prompts with personal data masked by CloudWatch. full: prompts as logged.
+  ConnectorRole:
+    Type: String
+    AllowedPattern: '^arn:aws:iam::[0-9]{12}:role/CarbonForgeConnector(Prod|Dev)$'
+    ConstraintDescription: must be the CarbonForge connector role ARN shown in CarbonForge Connect.
+    Description: The CarbonForge connector role that may assume the reader role, as shown in CarbonForge Connect.
+  ExternalId:
+    Type: String
+    MinLength: 2
+    MaxLength: 1224
+    AllowedPattern: '^[A-Za-z0-9+=,.@:/_-]+$'
+    ConstraintDescription: must be the value shown in CarbonForge Connect (letters, digits and +=,.@:/_-).
+    Description: Your external ID, as shown in CarbonForge Connect. The reader role can only be assumed with it.
+  BilledSpend:
+    Type: String
+    AllowedValues: ["true", "false"]
+    Default: "false"
+    Description: >-
+      true lets CarbonForge read your billed Bedrock spend with Cost Explorer. Cost Explorer
+      access covers your whole AWS bill; CarbonForge only queries Amazon Bedrock.
+  ExistingLogging:
+    Type: String
+    AllowedValues: [none, their-log-group, their-bucket]
+    Default: none
+    Description: >-
+      none: logging is off in this region, the stack creates the destination. their-log-group or
+      their-bucket: logging is already on; the stack leaves it exactly as it is and only gives
+      CarbonForge read access to that destination. At the masked level only their-log-group is
+      possible, and only if that log group already has a CloudWatch data protection policy.
+  ExistingLogGroup:
+    Type: String
+    Default: ""
+    AllowedPattern: '^$|^[.\-_/#A-Za-z0-9]{1,512}$'
+    Description: With their-log-group, the log group your Bedrock logging writes to.
+  ExistingBucket:
+    Type: String
+    Default: ""
+    AllowedPattern: '^$|^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$'
+    Description: With their-bucket, the bucket your Bedrock logging writes to.
+  ExistingKeyPrefix:
+    Type: String
+    Default: ""
+    AllowedPattern: '^$|^[^/](.*[^/])?$'
+    ConstraintDescription: must not start or end with a slash.
+    Description: With their-bucket, your logging's S3 key prefix, if it has one (no leading or trailing slash).
+  ExistingKmsKeyArn:
+    Type: String
+    Default: ""
+    AllowedPattern: '^$|^arn:aws:kms:[a-z0-9-]+:[0-9]{12}:key/[A-Za-z0-9-]+$'
+    Description: With their-bucket, the ARN of the bucket's own KMS key, if it uses one (empty for SSE-S3).
+
+Rules:
+  MaskedAdoptsOnlyALogGroup:
+    RuleCondition: !Equals [!Ref ReadingLevel, masked]
+    Assertions:
+      - Assert: !Not [!Equals [!Ref ExistingLogging, their-bucket]]
+        AssertDescription: >-
+          At the masked level CarbonForge reads only a CloudWatch log group that your own policy
+          masks, never an S3 copy. Choose full, or their-log-group.
+  TheirLogGroupNamed:
+    RuleCondition: !Equals [!Ref ExistingLogging, their-log-group]
+    Assertions:
+      - Assert: !Not [!Equals [!Ref ExistingLogGroup, ""]]
+        AssertDescription: With their-log-group, name your log group.
+  TheirBucketNamed:
+    RuleCondition: !Equals [!Ref ExistingLogging, their-bucket]
+    Assertions:
+      - Assert: !Not [!Equals [!Ref ExistingBucket, ""]]
+        AssertDescription: With their-bucket, name your bucket.
+
+Conditions:
+  Masked: !Equals [!Ref ReadingLevel, masked]
+  NewLogging: !Equals [!Ref ExistingLogging, none]
+  NewMasked: !And [!Condition NewLogging, !Condition Masked]
+  NewFull: !And [!Condition NewLogging, !Not [!Condition Masked]]
+  TheirLogGroup: !Equals [!Ref ExistingLogging, their-log-group]
+  TheirBucket: !Equals [!Ref ExistingLogging, their-bucket]
+  TheirPrefix: !Not [!Equals [!Ref ExistingKeyPrefix, ""]]
+  TheirKey: !And [!Condition TheirBucket, !Not [!Equals [!Ref ExistingKmsKeyArn, ""]]]
+  ReadsLogs: !Or [!Condition NewMasked, !Condition TheirLogGroup]
+  BilledSpendOn: !Equals [!Ref BilledSpend, "true"]
+
+# Fixed names: CarbonForge Connect and its connection test look them up.
+Resources:
+  # -------------------------------------------------------------------------
+  # Masked: a log group with a data protection policy that masks personal data
+  # as each event is written, and a group recording which kind of data each
+  # mask hid (never the value).
+  # -------------------------------------------------------------------------
+  FindingsLogGroup:
+    Type: AWS::Logs::LogGroup
+    Condition: NewMasked
+    Properties:
+      LogGroupName: /aws/bedrock/modelinvocations-findings
+      RetentionInDays: 14
+
+  LogGroup:
+    Type: AWS::Logs::LogGroup
+    Condition: NewMasked
+    Properties:
+      LogGroupName: /aws/bedrock/modelinvocations
+      RetentionInDays: 14
+      # BEGIN generated by scripts/gen_identifiers.py from aws/identifiers.json
+      DataProtectionPolicy:
+        Name: carbonforge-mask-pii
+        Version: '2021-06-01'
+        Configuration:
+          CustomDataIdentifier:
+            - Name: 'CarbonForgeIntlPhone'
+              Regex: '\+\d{1,3}(?:[ .-]?\d{1,4}){2,5}'
+            - Name: 'CarbonForgeCardGroups'
+              Regex: '\b\d{4}[ -]\d{4}[ -]\d{4}[ -]\d{1,7}\b'
+            - Name: 'CarbonForgeCardDigits'
+              Regex: '\b\d{13,19}\b'
+            - Name: 'CarbonForgeFrPhone'
+              Regex: '\b0[1-9](?:[ .-]?\d{2}){4}\b'
+            - Name: 'CarbonForgeIban'
+              Regex: '\b[A-Z]{2}\d{2}(?: ?[A-Z0-9]{4}){3,7}(?: ?[A-Z0-9]{1,3})?\b'
+            - Name: 'CarbonForgeLatLong'
+              Regex: '-?\d{1,2}\.\d{4,}, ?-?\d{1,3}\.\d{4,}'
+            - Name: 'CarbonForgeFrNir'
+              Regex: '\b[12] ?\d{2} ?\d{2} ?(?:\d{2}|2A|2B) ?\d{3} ?\d{3} ?\d{2}\b'
+            - Name: 'CarbonForgeMac'
+              Regex: '\b(?:[0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}\b'
+            - Name: 'CarbonForgeApiKey'
+              Regex: '\b(?:sk|pk|rk)-[A-Za-z0-9_-]{20,}'
+            - Name: 'CarbonForgePrivateKey'
+              Regex: '-----BEGIN [A-Z ]{0,20}PRIVATE KEY-----[A-Za-z0-9+/=\\ ]{20,}'
+        Statement:
+          - Sid: audit
+            DataIdentifier:
+              - 'arn:aws:dataprotection::aws:data-identifier/Name'
+              - 'arn:aws:dataprotection::aws:data-identifier/EmailAddress'
+              - 'arn:aws:dataprotection::aws:data-identifier/PhoneNumber-US'
+              - 'arn:aws:dataprotection::aws:data-identifier/PhoneNumber-FR'
+              - 'arn:aws:dataprotection::aws:data-identifier/PhoneNumber-GB'
+              - 'arn:aws:dataprotection::aws:data-identifier/Address'
+              - 'arn:aws:dataprotection::aws:data-identifier/ZipCode-US'
+              - 'arn:aws:dataprotection::aws:data-identifier/DateOfBirth'
+              - 'arn:aws:dataprotection::aws:data-identifier/LatLong'
+              - 'arn:aws:dataprotection::aws:data-identifier/Ssn-US'
+              - 'arn:aws:dataprotection::aws:data-identifier/InseeCode-FR'
+              - 'arn:aws:dataprotection::aws:data-identifier/PassportNumber-US'
+              - 'arn:aws:dataprotection::aws:data-identifier/PassportNumber-FR'
+              - 'arn:aws:dataprotection::aws:data-identifier/DriversLicense-US'
+              - 'arn:aws:dataprotection::aws:data-identifier/TaxId-FR'
+              - 'arn:aws:dataprotection::aws:data-identifier/IndividualTaxIdentificationNumber-US'
+              - 'arn:aws:dataprotection::aws:data-identifier/CreditCardNumber'
+              - 'arn:aws:dataprotection::aws:data-identifier/CreditCardExpiration'
+              - 'arn:aws:dataprotection::aws:data-identifier/CreditCardSecurityCode'
+              - 'arn:aws:dataprotection::aws:data-identifier/BankAccountNumber-FR'
+              - 'arn:aws:dataprotection::aws:data-identifier/BankAccountNumber-US'
+              - 'arn:aws:dataprotection::aws:data-identifier/IpAddress'
+              - 'arn:aws:dataprotection::aws:data-identifier/VehicleIdentificationNumber'
+              - 'arn:aws:dataprotection::aws:data-identifier/AwsSecretKey'
+              - 'arn:aws:dataprotection::aws:data-identifier/OpenSshPrivateKey'
+              - 'arn:aws:dataprotection::aws:data-identifier/PgpPrivateKey'
+              - 'arn:aws:dataprotection::aws:data-identifier/PkcsPrivateKey'
+              - 'arn:aws:dataprotection::aws:data-identifier/PuttyPrivateKey'
+              - 'CarbonForgeIntlPhone'
+              - 'CarbonForgeCardGroups'
+              - 'CarbonForgeCardDigits'
+              - 'CarbonForgeFrPhone'
+              - 'CarbonForgeIban'
+              - 'CarbonForgeLatLong'
+              - 'CarbonForgeFrNir'
+              - 'CarbonForgeMac'
+              - 'CarbonForgeApiKey'
+              - 'CarbonForgePrivateKey'
+            Operation:
+              Audit:
+                FindingsDestination:
+                  CloudWatchLogs:
+                    LogGroup: !Ref FindingsLogGroup
+          - Sid: mask
+            DataIdentifier:
+              - 'arn:aws:dataprotection::aws:data-identifier/Name'
+              - 'arn:aws:dataprotection::aws:data-identifier/EmailAddress'
+              - 'arn:aws:dataprotection::aws:data-identifier/PhoneNumber-US'
+              - 'arn:aws:dataprotection::aws:data-identifier/PhoneNumber-FR'
+              - 'arn:aws:dataprotection::aws:data-identifier/PhoneNumber-GB'
+              - 'arn:aws:dataprotection::aws:data-identifier/Address'
+              - 'arn:aws:dataprotection::aws:data-identifier/ZipCode-US'
+              - 'arn:aws:dataprotection::aws:data-identifier/DateOfBirth'
+              - 'arn:aws:dataprotection::aws:data-identifier/LatLong'
+              - 'arn:aws:dataprotection::aws:data-identifier/Ssn-US'
+              - 'arn:aws:dataprotection::aws:data-identifier/InseeCode-FR'
+              - 'arn:aws:dataprotection::aws:data-identifier/PassportNumber-US'
+              - 'arn:aws:dataprotection::aws:data-identifier/PassportNumber-FR'
+              - 'arn:aws:dataprotection::aws:data-identifier/DriversLicense-US'
+              - 'arn:aws:dataprotection::aws:data-identifier/TaxId-FR'
+              - 'arn:aws:dataprotection::aws:data-identifier/IndividualTaxIdentificationNumber-US'
+              - 'arn:aws:dataprotection::aws:data-identifier/CreditCardNumber'
+              - 'arn:aws:dataprotection::aws:data-identifier/CreditCardExpiration'
+              - 'arn:aws:dataprotection::aws:data-identifier/CreditCardSecurityCode'
+              - 'arn:aws:dataprotection::aws:data-identifier/BankAccountNumber-FR'
+              - 'arn:aws:dataprotection::aws:data-identifier/BankAccountNumber-US'
+              - 'arn:aws:dataprotection::aws:data-identifier/IpAddress'
+              - 'arn:aws:dataprotection::aws:data-identifier/VehicleIdentificationNumber'
+              - 'arn:aws:dataprotection::aws:data-identifier/AwsSecretKey'
+              - 'arn:aws:dataprotection::aws:data-identifier/OpenSshPrivateKey'
+              - 'arn:aws:dataprotection::aws:data-identifier/PgpPrivateKey'
+              - 'arn:aws:dataprotection::aws:data-identifier/PkcsPrivateKey'
+              - 'arn:aws:dataprotection::aws:data-identifier/PuttyPrivateKey'
+              - 'CarbonForgeIntlPhone'
+              - 'CarbonForgeCardGroups'
+              - 'CarbonForgeCardDigits'
+              - 'CarbonForgeFrPhone'
+              - 'CarbonForgeIban'
+              - 'CarbonForgeLatLong'
+              - 'CarbonForgeFrNir'
+              - 'CarbonForgeMac'
+              - 'CarbonForgeApiKey'
+              - 'CarbonForgePrivateKey'
+            Operation:
+              Deidentify:
+                MaskConfig: {}
+      # END generated
+
+  WriterRole:
+    Type: AWS::IAM::Role
+    Condition: NewMasked
+    Properties:
+      RoleName: CarbonForgeBedrockLogWriter
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: bedrock.amazonaws.com }
+            Action: sts:AssumeRole
+            Condition: { StringEquals: { "aws:SourceAccount": !Ref AWS::AccountId } }
+      Policies:
+        - PolicyName: WriteBedrockLogs
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: [logs:CreateLogStream, logs:PutLogEvents]
+                Resource: !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:${LogGroup}:*"
+
+  # -------------------------------------------------------------------------
+  # Full: S3 bucket, private, objects under bedrock/ expire after 14 days.
+  # Deleting the stack fails while the bucket holds logs: it is never emptied
+  # for you.
+  # -------------------------------------------------------------------------
+  LogsBucket:
+    Type: AWS::S3::Bucket
+    Condition: NewFull
+    Properties:
+      BucketName: !Sub "carbonforge-bedrock-logs-${AWS::AccountId}"
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        IgnorePublicAcls: true
+        BlockPublicPolicy: true
+        RestrictPublicBuckets: true
+      LifecycleConfiguration:
+        Rules:
+          - Id: carbonforge-14-days
+            Status: Enabled
+            Prefix: bedrock/
+            ExpirationInDays: 14
+
+  LogsBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Condition: NewFull
+    Properties:
+      Bucket: !Ref LogsBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: bedrock.amazonaws.com }
+            Action: s3:PutObject
+            Resource: !Sub "arn:aws:s3:::${LogsBucket}/bedrock/*"
+            Condition: { StringEquals: { "aws:SourceAccount": !Ref AWS::AccountId } }
+
+  # -------------------------------------------------------------------------
+  # CarbonForgeReader: the only access CarbonForge gets. Read-only, assumable
+  # only by the CarbonForge connector role with your external ID. With your
+  # existing logging it reads that destination only, as it is.
+  # -------------------------------------------------------------------------
+  ReaderRole:
+    Type: AWS::IAM::Role
+    # cfn-lint checks the ARNs with the parameter defaults, so "arn:aws:s3:::${ExistingBucket}" looks
+    # empty to it. That statement only exists with their-bucket, where a rule requires the bucket.
+    Metadata:
+      cfn-lint:
+        config:
+          ignore_checks: [W1031]
+    Properties:
+      RoleName: CarbonForgeReader
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { AWS: !Ref ConnectorRole }
+            Action: sts:AssumeRole
+            Condition: { StringEquals: { "sts:ExternalId": !Ref ExternalId } }
+      Policies:
+        - PolicyName: CarbonForgeReadLogs
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - !If
+                - NewMasked
+                - Effect: Allow
+                  Action: [logs:FilterLogEvents, logs:GetLogEvents, logs:DescribeLogStreams, logs:GetDataProtectionPolicy]
+                  Resource:
+                    - !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/bedrock/modelinvocations"
+                    - !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/bedrock/modelinvocations:*"
+                    - !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/bedrock/modelinvocations-findings"
+                    - !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/bedrock/modelinvocations-findings:*"
+                - !Ref AWS::NoValue
+              - !If
+                - TheirLogGroup
+                - Effect: Allow
+                  Action: [logs:FilterLogEvents, logs:GetLogEvents, logs:DescribeLogStreams, logs:GetDataProtectionPolicy]
+                  Resource:
+                    - !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:${ExistingLogGroup}"
+                    - !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:${ExistingLogGroup}:*"
+                - !Ref AWS::NoValue
+              # CarbonForge can never see unmasked data, whatever else the role is given.
+              - !If [ReadsLogs, { Effect: Deny, Action: logs:Unmask, Resource: "*" }, !Ref AWS::NoValue]
+              - !If
+                - NewFull
+                - Effect: Allow
+                  Action: s3:ListBucket
+                  Resource: !Sub "arn:aws:s3:::carbonforge-bedrock-logs-${AWS::AccountId}"
+                  Condition: { StringLike: { "s3:prefix": ["bedrock/*"] } }
+                - !Ref AWS::NoValue
+              - !If
+                - NewFull
+                - Effect: Allow
+                  Action: s3:GetObject
+                  Resource: !Sub "arn:aws:s3:::carbonforge-bedrock-logs-${AWS::AccountId}/bedrock/*"
+                - !Ref AWS::NoValue
+              # Your bucket: only the path Bedrock writes to, <prefix>/AWSLogs/<account>/BedrockModelInvocationLogs/.
+              - !If
+                - TheirBucket
+                - Effect: Allow
+                  Action: s3:ListBucket
+                  Resource: !Sub "arn:aws:s3:::${ExistingBucket}"
+                  Condition:
+                    StringLike:
+                      "s3:prefix":
+                        - !Sub
+                          - "${Path}*"
+                          - Path: !If
+                              - TheirPrefix
+                              - !Sub "${ExistingKeyPrefix}/AWSLogs/${AWS::AccountId}/BedrockModelInvocationLogs/"
+                              - !Sub "AWSLogs/${AWS::AccountId}/BedrockModelInvocationLogs/"
+                - !Ref AWS::NoValue
+              - !If
+                - TheirBucket
+                - Effect: Allow
+                  Action: s3:GetObject
+                  Resource: !Sub
+                    - "arn:aws:s3:::${ExistingBucket}/${Path}*"
+                    - Path: !If
+                        - TheirPrefix
+                        - !Sub "${ExistingKeyPrefix}/AWSLogs/${AWS::AccountId}/BedrockModelInvocationLogs/"
+                        - !Sub "AWSLogs/${AWS::AccountId}/BedrockModelInvocationLogs/"
+                - !Ref AWS::NoValue
+              # Your bucket's own KMS key: decrypt through S3 only. Without it objects list but cannot be read.
+              - !If
+                - TheirKey
+                - Effect: Allow
+                  Action: kms:Decrypt
+                  Resource: !Ref ExistingKmsKeyArn
+                  Condition: { StringEquals: { "kms:ViaService": !Sub "s3.${AWS::Region}.amazonaws.com" } }
+                - !Ref AWS::NoValue
+              # Usage history per model. AWS cannot limit metric reads to one namespace; CarbonForge only queries AWS/Bedrock.
+              - Effect: Allow
+                Action: [cloudwatch:GetMetricData, cloudwatch:ListMetrics]
+                Resource: "*"
+              # Cost Explorer has no resource scoping: it covers the whole bill.
+              - !If [BilledSpendOn, { Effect: Allow, Action: ce:GetCostAndUsage, Resource: "*" }, !Ref AWS::NoValue]
+              - Effect: Allow
+                Action: bedrock:GetModelInvocationLoggingConfiguration
+                Resource: "*"
+
+Outputs:
+  ReaderRoleArn:
+    Description: Paste this into CarbonForge Connect.
+    Value: !GetAtt ReaderRole.Arn
+  Region:
+    Description: Region of this stack. Bedrock logging is set per region.
+    Value: !Ref AWS::Region
+  LoggingDestination:
+    Condition: NewLogging
+    Description: "Turn logging on: Bedrock console > Settings > Model invocation logging, Text only, this destination."
+    Value: !If [Masked, CloudWatch Logs only, S3 only]
+  LogGroup:
+    Condition: NewMasked
+    Description: CloudWatch Logs destination, log group name.
+    Value: !Ref LogGroup
+  WriterRoleArn:
+    Condition: NewMasked
+    Description: CloudWatch Logs destination, "Use an existing service role".
+    Value: !GetAtt WriterRole.Arn
+  S3Location:
+    Condition: NewFull
+    Description: S3 destination, S3 location.
+    Value: !Sub "s3://${LogsBucket}/bedrock"
+  EnableLoggingCommand:
+    Condition: NewLogging
+    Description: The same as the console step, as one AWS CLI command.
+    Value: !If
+      - Masked
+      - !Sub >-
+        aws bedrock put-model-invocation-logging-configuration --region ${AWS::Region}
+        --logging-config '{"cloudWatchConfig": {"logGroupName": "${LogGroup}", "roleArn": "${WriterRole.Arn}"},
+        "textDataDeliveryEnabled": true, "imageDataDeliveryEnabled": false,
+        "embeddingDataDeliveryEnabled": false, "videoDataDeliveryEnabled": false}'
+      - !Sub >-
+        aws bedrock put-model-invocation-logging-configuration --region ${AWS::Region}
+        --logging-config '{"s3Config": {"bucketName": "${LogsBucket}", "keyPrefix": "bedrock"},
+        "textDataDeliveryEnabled": true, "imageDataDeliveryEnabled": false,
+        "embeddingDataDeliveryEnabled": false, "videoDataDeliveryEnabled": false}'
