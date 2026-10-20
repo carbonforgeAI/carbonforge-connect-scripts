@@ -13,16 +13,19 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts" / "build_module_zip.sh"
-ENTRIES = {
-    "README.md",
-    "identifiers.tf",
-    "main.tf",
-    "outputs.tf",
-    "scripts/",
-    "scripts/existing_logging.sh",
-    "variables.tf",
-    "versions.tf",
-}
+EXCLUDED = ("tests/", "examples/", ".gitignore")
+
+
+def module_files(commit: str) -> set[str]:
+    """The commit's tracked files under aws/terraform that the published zip must hold."""
+    listed = subprocess.run(
+        ["git", "ls-tree", "-r", "--name-only", f"{commit}:aws/terraform"],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.split()
+    return {f for f in listed if not f.startswith(EXCLUDED)}
 
 
 def build(out: Path, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
@@ -49,13 +52,15 @@ def git_has_archive_mtime() -> bool:
 @pytest.mark.skipif(not git_has_archive_mtime(), reason="needs git 2.40+ (git archive --mtime)")
 def test_two_builds_are_identical_with_the_module_at_the_root(tmp_path: Path) -> None:
     first, second = tmp_path / "a.zip", tmp_path / "b.zip"
-    for out in (first, second):
-        run = build(out)
+    for out, tz in ((first, "UTC"), (second, "Asia/Tokyo")):
+        run = build(out, {**os.environ, "TZ": tz})
         assert run.returncode == 0, run.stderr
     assert (
         hashlib.sha256(first.read_bytes()).digest() == hashlib.sha256(second.read_bytes()).digest()
     )
-    assert set(zipfile.ZipFile(first).namelist()) == ENTRIES
+    files = {n for n in zipfile.ZipFile(first).namelist() if not n.endswith("/")}
+    assert files == module_files("HEAD")
+    assert {"main.tf", "variables.tf", "scripts/existing_logging.sh"} <= files
 
 
 def test_an_old_git_is_refused_with_a_clear_message(tmp_path: Path) -> None:
