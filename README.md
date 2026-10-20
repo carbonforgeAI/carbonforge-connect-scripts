@@ -27,7 +27,7 @@ This repository is private, so customers use the published copies, never a git s
  aws/cloudformation/connect.yaml          ─► https://carbonforge-connect-templates.s3.amazonaws.com/connect-v<N>.yaml
 ```
 
-A published object is never overwritten: a new version is a new name, so a customer's module source or stack keeps pointing at what it was created from. `scripts/build_module_zip.sh` builds the zip reproducibly from a commit and prints its sha256; after the upload, check that the public copy has the same sha256.
+A published object is never overwritten: a new version is a new name, so a customer's module source or stack keeps pointing at what it was created from. `scripts/build_module_zip.sh` builds the zip reproducibly from a commit and prints its sha256; after the upload, check that the public copy has the same sha256. (`terraform-aws-connect-v1.zip`, sha256 `dafd025f...69bb`, was built from 836455c before the script pinned the time zone to UTC, so the script does not reproduce it; v2 onwards it does.)
 
 ```hcl
 provider "aws" {
